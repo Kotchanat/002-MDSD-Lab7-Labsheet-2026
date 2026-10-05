@@ -1,14 +1,20 @@
-
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../models/listing_draft.dart';
+import '../repositories/listing_draft_repository.dart';
 import '../services/gemini_vision_service.dart';
+import 'my_drafts_page.dart';
 
 class SellItemPage extends StatefulWidget {
-  const SellItemPage({super.key});
+  final ListingDraftRepository draftRepository;
+
+  const SellItemPage({
+    super.key,
+    required this.draftRepository,
+  });
 
   @override
   State<SellItemPage> createState() => _SellItemPageState();
@@ -16,6 +22,7 @@ class SellItemPage extends StatefulWidget {
 
 class _SellItemPageState extends State<SellItemPage> {
   final ImagePicker _picker = ImagePicker();
+
   final GeminiVisionService _visionService =
       GeminiVisionService();
 
@@ -51,15 +58,23 @@ class _SellItemPageState extends State<SellItemPage> {
 
   final TextEditingController _titleController =
       TextEditingController();
+
   final TextEditingController _categoryController =
       TextEditingController();
+
   final TextEditingController _descriptionController =
       TextEditingController();
 
   File? _imageFile;
+
   ListingDraft? _draft;
+
   String? _errorMessage;
+
   bool _isAnalyzing = false;
+
+  // สถานะกำลังบันทึกร่าง
+  bool _isSavingDraft = false;
 
   // ============================================================
   // เลือกรูปภาพสินค้า
@@ -157,13 +172,22 @@ class _SellItemPageState extends State<SellItemPage> {
   }
 
   // ============================================================
-  // ยืนยันร่างประกาศ
+  // ยืนยันและบันทึกร่างประกาศลงฐานข้อมูล
   // ============================================================
-  void confirmDraft() {
+  Future<void> confirmDraft() async {
     if (_draft == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('กรุณาให้ AI ช่วยแนะนำก่อน'),
+        ),
+      );
+      return;
+    }
+
+    if (_imageFile == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('กรุณาเลือกรูปภาพสินค้าก่อน'),
         ),
       );
       return;
@@ -184,21 +208,66 @@ class _SellItemPageState extends State<SellItemPage> {
       return;
     }
 
-    setState(() {
-      _imageFile = null;
-      _draft = null;
-      _errorMessage = null;
+    if (_isSavingDraft) return;
 
-      _titleController.clear();
-      _categoryController.clear();
-      _descriptionController.clear();
+    // สร้าง ListingDraft จากข้อมูลที่ผู้ใช้ตรวจสอบ/แก้ไขแล้ว
+    final draft = ListingDraft.fromJson({
+      'title': title,
+      'category': category,
+      'description': description,
     });
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('บันทึกร่างประกาศเรียบร้อยแล้ว'),
-      ),
-    );
+    setState(() {
+      _isSavingDraft = true;
+      _errorMessage = null;
+    });
+
+    try {
+      // บันทึกร่างลงฐานข้อมูล Drift แบบถาวร
+      await widget.draftRepository.saveDraft(
+        draft,
+        _imageFile!.path,
+      );
+
+      if (!mounted) return;
+
+      // ล้างข้อมูลหลังบันทึกสำเร็จเท่านั้น
+      setState(() {
+        _imageFile = null;
+        _draft = null;
+        _errorMessage = null;
+
+        _titleController.clear();
+        _categoryController.clear();
+        _descriptionController.clear();
+
+        _isSavingDraft = false;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'บันทึกร่างประกาศเรียบร้อยแล้ว',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() {
+        _isSavingDraft = false;
+        _errorMessage =
+            'บันทึกร่างประกาศไม่สำเร็จ: $e';
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'บันทึกร่างประกาศไม่สำเร็จ: $e',
+          ),
+        ),
+      );
+    }
   }
 
   // ============================================================
@@ -209,6 +278,7 @@ class _SellItemPageState extends State<SellItemPage> {
     _titleController.dispose();
     _categoryController.dispose();
     _descriptionController.dispose();
+
     super.dispose();
   }
 
@@ -221,6 +291,24 @@ class _SellItemPageState extends State<SellItemPage> {
       appBar: AppBar(
         title: const Text('ลงประกาศขายสินค้า'),
         centerTitle: true,
+
+        // ปุ่มเข้าสู่หน้าร่างประกาศของฉัน
+        actions: [
+          IconButton(
+            tooltip: 'ร่างประกาศของฉัน',
+            icon: const Icon(Icons.history),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute<void>(
+                  builder: (_) => MyDraftsPage(
+                    repository: widget.draftRepository,
+                  ),
+                ),
+              );
+            },
+          ),
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
@@ -249,7 +337,8 @@ class _SellItemPageState extends State<SellItemPage> {
               ),
               child: _imageFile == null
                   ? const Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
+                      mainAxisAlignment:
+                          MainAxisAlignment.center,
                       children: [
                         Icon(
                           Icons.image_outlined,
@@ -266,7 +355,8 @@ class _SellItemPageState extends State<SellItemPage> {
                       ],
                     )
                   : ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius:
+                          BorderRadius.circular(12),
                       child: Image.file(
                         _imageFile!,
                         fit: BoxFit.contain,
@@ -278,11 +368,16 @@ class _SellItemPageState extends State<SellItemPage> {
             const SizedBox(height: 20),
 
             ElevatedButton.icon(
-              onPressed: _isAnalyzing ? null : pickImage,
+              onPressed:
+                  _isAnalyzing || _isSavingDraft
+                      ? null
+                      : pickImage,
               icon: const Icon(
                 Icons.photo_library_outlined,
               ),
-              label: const Text('เลือกรูปภาพสินค้า'),
+              label: const Text(
+                'เลือกรูปภาพสินค้า',
+              ),
               style: ElevatedButton.styleFrom(
                 padding: const EdgeInsets.symmetric(
                   vertical: 16,
@@ -293,11 +388,14 @@ class _SellItemPageState extends State<SellItemPage> {
             const SizedBox(height: 16),
 
             OutlinedButton.icon(
-              onPressed: _isAnalyzing
-                  ? null
-                  : analyzeProductImage,
+              onPressed:
+                  _isAnalyzing || _isSavingDraft
+                      ? null
+                      : analyzeProductImage,
               icon: const Icon(Icons.auto_awesome),
-              label: const Text('ให้ AI ช่วยแนะนำ'),
+              label: const Text(
+                'ให้ AI ช่วยแนะนำ',
+              ),
               style: OutlinedButton.styleFrom(
                 padding: const EdgeInsets.symmetric(
                   vertical: 16,
@@ -326,12 +424,30 @@ class _SellItemPageState extends State<SellItemPage> {
                 ),
               ),
 
+            if (_isSavingDraft)
+              const Card(
+                child: Padding(
+                  padding: EdgeInsets.all(20),
+                  child: Column(
+                    children: [
+                      CircularProgressIndicator(),
+                      SizedBox(height: 16),
+                      Text(
+                        'กำลังบันทึกร่างประกาศ...',
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
             if (_draft != null)
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16),
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                    crossAxisAlignment:
+                        CrossAxisAlignment.start,
                     children: [
                       Row(
                         children: [
@@ -347,7 +463,8 @@ class _SellItemPageState extends State<SellItemPage> {
                                   : 'ผลการวิเคราะห์จาก AI',
                               style: const TextStyle(
                                 fontSize: 18,
-                                fontWeight: FontWeight.bold,
+                                fontWeight:
+                                    FontWeight.bold,
                               ),
                             ),
                           ),
@@ -378,7 +495,8 @@ class _SellItemPageState extends State<SellItemPage> {
 
                       TextField(
                         controller: _titleController,
-                        decoration: const InputDecoration(
+                        decoration:
+                            const InputDecoration(
                           border: OutlineInputBorder(),
                           hintText: 'กรอกชื่อประกาศ',
                         ),
@@ -398,7 +516,8 @@ class _SellItemPageState extends State<SellItemPage> {
 
                       TextField(
                         controller: _categoryController,
-                        decoration: const InputDecoration(
+                        decoration:
+                            const InputDecoration(
                           border: OutlineInputBorder(),
                           hintText: 'กรอกหมวดหมู่',
                         ),
@@ -416,10 +535,13 @@ class _SellItemPageState extends State<SellItemPage> {
                       const SizedBox(height: 6),
 
                       TextField(
-                        controller: _descriptionController,
-                        decoration: const InputDecoration(
+                        controller:
+                            _descriptionController,
+                        decoration:
+                            const InputDecoration(
                           border: OutlineInputBorder(),
-                          hintText: 'กรอกคำบรรยายสินค้า',
+                          hintText:
+                              'กรอกคำบรรยายสินค้า',
                         ),
                         maxLines: 5,
                       ),
@@ -429,15 +551,32 @@ class _SellItemPageState extends State<SellItemPage> {
                       SizedBox(
                         width: double.infinity,
                         child: ElevatedButton.icon(
-                          onPressed: _isAnalyzing
-                              ? null
-                              : confirmDraft,
-                          icon: const Icon(Icons.check),
-                          label: const Text(
-                            'ยืนยันร่างประกาศ',
+                          onPressed:
+                              _isAnalyzing ||
+                                      _isSavingDraft
+                                  ? null
+                                  : confirmDraft,
+                          icon: _isSavingDraft
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child:
+                                      CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(
+                                  Icons.check,
+                                ),
+                          label: Text(
+                            _isSavingDraft
+                                ? 'กำลังบันทึกร่าง...'
+                                : 'ยืนยันร่างประกาศ',
                           ),
-                          style: ElevatedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(
+                          style:
+                              ElevatedButton.styleFrom(
+                            padding:
+                                const EdgeInsets.symmetric(
                               vertical: 16,
                             ),
                           ),
@@ -454,7 +593,8 @@ class _SellItemPageState extends State<SellItemPage> {
                 child: Padding(
                   padding: const EdgeInsets.all(16),
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                    crossAxisAlignment:
+                        CrossAxisAlignment.start,
                     children: [
                       const Row(
                         children: [
@@ -465,9 +605,10 @@ class _SellItemPageState extends State<SellItemPage> {
                           SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              'วิเคราะห์ภาพไม่สำเร็จ',
+                              'เกิดข้อผิดพลาด',
                               style: TextStyle(
-                                fontWeight: FontWeight.bold,
+                                fontWeight:
+                                    FontWeight.bold,
                                 color: Colors.red,
                               ),
                             ),
@@ -477,18 +618,27 @@ class _SellItemPageState extends State<SellItemPage> {
 
                       const SizedBox(height: 8),
 
-                      SelectableText(_errorMessage!),
+                      SelectableText(
+                        _errorMessage!,
+                      ),
 
                       const SizedBox(height: 12),
 
                       Align(
-                        alignment: Alignment.centerRight,
+                        alignment:
+                            Alignment.centerRight,
                         child: TextButton.icon(
-                          onPressed: _isAnalyzing
-                              ? null
-                              : analyzeProductImage,
-                          icon: const Icon(Icons.refresh),
-                          label: const Text('ลองอีกครั้ง'),
+                          onPressed:
+                              _isAnalyzing ||
+                                      _isSavingDraft
+                                  ? null
+                                  : analyzeProductImage,
+                          icon: const Icon(
+                            Icons.refresh,
+                          ),
+                          label: const Text(
+                            'ลองอีกครั้ง',
+                          ),
                         ),
                       ),
                     ],
